@@ -141,6 +141,56 @@ static bool is_smoke_size(int w, int h) {
            (mx == 256 && mn == 128);
 }
 
+
+/* ---------- Pixel Blocks (near.txt, blk.txt) ---------- */
+/* near.txt: 0 = off, 1 = on (default). Only used by the Pixel Blocks path.
+   Textures that get a raised base level are also switched to NEAREST
+   filtering, which is what produces the mosaic look. */
+static std::atomic<int> g_near{1};
+static std::atomic<int> g_blk{0};       /* blk.txt: target edge length in px per texture; 0 = fall back to bias.txt */
+static std::atomic<int> g_flagged{0}, g_forced{0}, g_smp{0};
+static const GLuint MAXTEX = 1u << 18;
+static std::atomic<uint8_t> g_tf[1u << 18];        /* 1 = NEAREST filtering is forced on this texture */
+static thread_local GLuint tl_bound[32];
+static thread_local int tl_unit = 0;
+
+static void (*o_act)(GLenum) = nullptr;
+static void h_act(GLenum u) {
+    int i = (int)u - 0x84C0;
+    tl_unit = (i >= 0 && i < 32) ? i : 0;
+    if (o_act) o_act(u);
+}
+
+static void (*o_bind)(GLenum, GLuint) = nullptr;
+static void h_bind(GLenum t, GLuint id) {
+    if (t == GL_TEXTURE_2D) tl_bound[tl_unit] = id;
+    if (o_bind) o_bind(t, id);
+}
+
+static void (*o_del)(GLsizei, const GLuint *) = nullptr;
+static void h_del(GLsizei n, const GLuint *ids) {
+    if (ids) {
+        for (GLsizei i = 0; i < n; i++) {
+            if (ids[i] < MAXTEX) g_tf[ids[i]] = 0;
+            for (int u = 0; u < 32; u++) if (tl_bound[u] == ids[i]) tl_bound[u] = 0;
+        }
+    }
+    if (o_del) o_del(n, ids);
+}
+
+/* ---------- Detail Cut (style.txt: 0 = off, 1-4 = minimum LOD; sedge.txt: 1 = NEAREST magnification) ---------- */
+/* ---------- Flat (flat.txt: 0 = off, 1-4 = strength) ----------
+   Locks a texture to its smallest mip levels so it renders as a near-solid color. */
+static std::atomic<int> g_style{0};
+static std::atomic<int> g_sedge{1};
+static std::atomic<int> g_flat{0};
+static std::atomic<int> g_rmsmoke{0};   /* smoke.txt: 1 = remove smoke textures (make transparent) */
+
+static std::atomic<int> g_minsz{64};                 /* minsz.txt: textures smaller than this are left untouched */
+
+static bool in_start_delay();
+static bool in_skip(int fmt, int w, int h);
+
 /* ---------- Minimal Vulkan types (ABI-compatible) for sampler modification ---------- */
 typedef uint32_t VkFlags;
 typedef uint32_t VkBool32;
@@ -222,6 +272,10 @@ static VkResult h_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo *pC
                                   const VkAllocationCallbacks *pAllocator, VkSampler *pSampler) {
     if (!o_vkCreateSampler) return -1;
     if (!pCreateInfo) return o_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    VkSamplerCreateInfo ci = *pCreateInfo;
+    apply_vulkan_look(&ci);
+    return o_vkCreateSampler(device, &ci, pAllocator, pSampler);
+}
 
 /* ---------- vkCreateImage tracking (for scope/character protection) ---------- */
 typedef struct VkExtent3D { uint32_t width, height, depth; } VkExtent3D;
@@ -301,54 +355,6 @@ static void h_vkDestroyImage(VkDevice device, VkImage image, const VkAllocationC
     }
     if (o_vkDestroyImage) o_vkDestroyImage(device, image, pAllocator);
 }
-    VkSamplerCreateInfo ci = *pCreateInfo;
-    apply_vulkan_look(&ci);
-    return o_vkCreateSampler(device, &ci, pAllocator, pSampler);
-}
-
-/* ---------- Pixel Blocks (near.txt, blk.txt) ---------- */
-/* near.txt: 0 = off, 1 = on (default). Only used by the Pixel Blocks path.
-   Textures that get a raised base level are also switched to NEAREST
-   filtering, which is what produces the mosaic look. */
-static std::atomic<int> g_near{1};
-static std::atomic<int> g_blk{0};       /* blk.txt: target edge length in px per texture; 0 = fall back to bias.txt */
-static std::atomic<int> g_flagged{0}, g_forced{0}, g_smp{0};
-static const GLuint MAXTEX = 1u << 18;
-static std::atomic<uint8_t> g_tf[1u << 18];        /* 1 = NEAREST filtering is forced on this texture */
-static thread_local GLuint tl_bound[32];
-static thread_local int tl_unit = 0;
-
-static void (*o_act)(GLenum) = nullptr;
-static void h_act(GLenum u) {
-    int i = (int)u - 0x84C0;
-    tl_unit = (i >= 0 && i < 32) ? i : 0;
-    if (o_act) o_act(u);
-}
-
-static void (*o_bind)(GLenum, GLuint) = nullptr;
-static void h_bind(GLenum t, GLuint id) {
-    if (t == GL_TEXTURE_2D) tl_bound[tl_unit] = id;
-    if (o_bind) o_bind(t, id);
-}
-
-static void (*o_del)(GLsizei, const GLuint *) = nullptr;
-static void h_del(GLsizei n, const GLuint *ids) {
-    if (ids) {
-        for (GLsizei i = 0; i < n; i++) {
-            if (ids[i] < MAXTEX) g_tf[ids[i]] = 0;
-            for (int u = 0; u < 32; u++) if (tl_bound[u] == ids[i]) tl_bound[u] = 0;
-        }
-    }
-    if (o_del) o_del(n, ids);
-}
-
-/* ---------- Detail Cut (style.txt: 0 = off, 1-4 = minimum LOD; sedge.txt: 1 = NEAREST magnification) ---------- */
-/* ---------- Flat (flat.txt: 0 = off, 1-4 = strength) ----------
-   Locks a texture to its smallest mip levels so it renders as a near-solid color. */
-static std::atomic<int> g_style{0};
-static std::atomic<int> g_sedge{1};
-static std::atomic<int> g_flat{0};
-static std::atomic<int> g_rmsmoke{0};   /* smoke.txt: 1 = remove smoke textures (make transparent) */
 static std::atomic<int> g_is_vulkan{0};  /* set when a vk* symbol is requested; GL hooks become no-ops */
 static std::atomic<int> g_ttsize{0};   /* ttsize.txt: -2 = base level only (shimmers) | -1 = mips capped at level 3 | 0 = normal | 1-3 = coarser pixels (2x, 4x, 8x) */
 static std::atomic<int> g_ttsm{0};     /* ttsm.txt: 0 = sharp | 1 = soft blend between mip levels */
@@ -419,7 +425,6 @@ static void h_smp(GLuint s, GLenum p, GLint v) {
 
 /* ---------- Texture groups, skip rules, minimum size, start delay ---------- */
 static inline int64_t now_ns();
-static std::atomic<int> g_minsz{64};                 /* minsz.txt: textures smaller than this are left untouched */
 static std::atomic<int> g_delay{10};                     /* delay.txt: seconds after launch during which no textures are modified (default 10 protects loading / login) */
 static std::atomic<int64_t> g_tstart{0};
 /* True while still inside the start-delay window (or before g_tstart is set). Used by texture
