@@ -191,6 +191,10 @@ static std::atomic<int> g_minsz{64};                 /* minsz.txt: textures smal
 static bool in_start_delay();
 static bool in_skip(int fmt, int w, int h);
 
+static std::atomic<int> g_ttsize{0};   /* ttsize.txt: -2 = base level only (shimmers) | -1 = mips capped at level 3 | 0 = normal | 1-3 = coarser pixels (2x, 4x, 8x) */
+static std::atomic<int> g_ttsm{0};     /* ttsm.txt: 0 = sharp | 1 = soft blend between mip levels */
+static std::atomic<int> g_testtex{1};  /* testtex.txt: 0 = off | 1 = True Pixelated (NEAREST sampling, full mip chain) */
+
 /* ---------- Minimal Vulkan types (ABI-compatible) for sampler modification ---------- */
 typedef uint32_t VkFlags;
 typedef uint32_t VkBool32;
@@ -356,9 +360,6 @@ static void h_vkDestroyImage(VkDevice device, VkImage image, const VkAllocationC
     if (o_vkDestroyImage) o_vkDestroyImage(device, image, pAllocator);
 }
 static std::atomic<int> g_is_vulkan{0};  /* set when a vk* symbol is requested; GL hooks become no-ops */
-static std::atomic<int> g_ttsize{0};   /* ttsize.txt: -2 = base level only (shimmers) | -1 = mips capped at level 3 | 0 = normal | 1-3 = coarser pixels (2x, 4x, 8x) */
-static std::atomic<int> g_ttsm{0};     /* ttsm.txt: 0 = sharp | 1 = soft blend between mip levels */
-static std::atomic<int> g_testtex{1};  /* testtex.txt: 0 = off | 1 = True Pixelated (NEAREST sampling, full mip chain) */
 #define TEX_MIN_LOD 0x813A
 #define TEX_MAX_LEVEL 0x813D
 #define TEX_ANISO 0x84FE
